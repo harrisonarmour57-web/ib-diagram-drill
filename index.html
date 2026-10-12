@@ -322,10 +322,24 @@ const DG = (() => {
     const Yv = y => Y(y - ymin) ;
     const axes = pn.ax !== null && pn.ax !== undefined;
     // grid ticks for numeric panels
+    // numeric panels: guide labels win over tick labels they would collide with, and close guide labels stagger
+    const gxo = new Map(), gyi = new Set();
     if (pn.ticks) {
       const [tx, ty] = pn.ticks;
-      for (let v = tx; v <= mx + 1e-9; v += tx) s += `<line class="grid" x1="${X(v)}" y1="${Y(0)}" x2="${X(v)}" y2="${Y(my)}"/><text class="tk" x="${X(v)}" y="${PY + 15}" text-anchor="middle">${+v.toFixed(2)}</text>`;
-      for (let v = ty; v <= my + 1e-9; v += ty) s += `<line class="grid" x1="${X(0)}" y1="${Y(v)}" x2="${X(mx)}" y2="${Y(v)}"/><text class="tk" x="${PX - 6}" y="${Y(v) + 4}" text-anchor="end">${+v.toFixed(2)}</text>`;
+      const gs = pn.els.filter(e => e.k === 'guide');
+      const gx = gs.filter(e => e.xl && e.toX !== false).map(e => X(e.pt[0])), gy = gs.filter(e => e.yl && e.toY !== false).map(e => Y(e.pt[1]));
+      for (let v = tx; v <= mx + 1e-9; v += tx) s += `<line class="grid" x1="${X(v)}" y1="${Y(0)}" x2="${X(v)}" y2="${Y(my)}"/>` + (gx.some(g => Math.abs(g - X(v)) < 30) ? '' : `<text class="tk" x="${X(v)}" y="${PY + 15}" text-anchor="middle">${+v.toFixed(2)}</text>`);
+      for (let v = ty; v <= my + 1e-9; v += ty) s += `<line class="grid" x1="${X(0)}" y1="${Y(v)}" x2="${X(mx)}" y2="${Y(v)}"/>` + (gy.some(g => Math.abs(g - Y(v)) < 14) ? '' : `<text class="tk" x="${PX - 6}" y="${Y(v) + 4}" text-anchor="end">${+v.toFixed(2)}</text>`);
+      let last = -1e9, lastLow = false;
+      for (const e of gs.filter(e => e.xl && e.xo == null && e.toX !== false).sort((a, b) => a.pt[0] - b.pt[0])) {
+        const x = X(e.pt[0]), low = !lastLow && x - last < 34;
+        if (low) gxo.set(e, 14); lastLow = low; last = x;
+      }
+      last = -1e9; lastLow = false;
+      for (const e of gs.filter(e => e.yl && e.yo == null && e.toY !== false).sort((a, b) => a.pt[1] - b.pt[1])) {
+        const y = Y(e.pt[1]), inn = !lastLow && last - y < 14;
+        if (inn) gyi.add(e); lastLow = inn; last = y;
+      }
     }
     for (const e of pn.els) {
       const c = e.c || 'k';
@@ -348,8 +362,8 @@ const DG = (() => {
         const x0 = e.toX === false ? null : X(x), y0 = e.toY === false ? null : Y(y);
         if (e.toY !== false) s += `<path class="gd" d="M${X(e.fromX ?? 0)} ${Y(y)} L${X(x)} ${Y(y)}"/>`;
         if (e.toX !== false) s += `<path class="gd" d="M${X(x)} ${Y(y)} L${X(x)} ${Y(e.fromY ?? zy)}"/>`;
-        if (e.xl) top += label(e.xl, X(x), (e.fromY != null ? Y(e.fromY) : Y(zy)) + 16 + (e.xo || 0), 'middle', 'tk2', ctx);
-        if (e.yl) top += label(e.yl, PX - 6, Y(y) + 4 + (e.yo || 0), 'end', 'tk2', ctx);
+        if (e.xl) top += label(e.xl, X(x), (e.fromY != null ? Y(e.fromY) : Y(zy)) + 16 + (e.xo || gxo.get(e) || 0), 'middle', 'tk2', ctx);
+        if (e.yl) top += gyi.has(e) ? label(e.yl, PX + 5, Y(y) - 4, 'start', 'tk2', ctx) : label(e.yl, PX - 6, Y(y) + 4 + (e.yo || 0), 'end', 'tk2', ctx);
       } else if (e.k === 'dot') {
         top += `<circle class="dt" cx="${X(e.pt[0])}" cy="${Y(e.pt[1])}" r="3.4"/>`;
         if (e.lab) top += label(e.lab, X(e.pt[0]) + (e.dx ?? 6), Y(e.pt[1]) + (e.dy ?? -6), e.anchor || 'start', 'pt', ctx);
@@ -1605,8 +1619,8 @@ function market() {
   }
 }
 const eqn = m => `Q<sub>d</sub> = ${m.a} − ${m.b}P &nbsp;and&nbsp; Q<sub>s</sub> = −${m.c} + ${m.d}P`;
-function marketPanel(m, extra = [], pmaxHint = 0) {
-  const pmax = Math.max(m.a / m.b, pmaxHint) * 1.05, qmax = m.a * 1.02;
+function marketPanel(m, extra = [], pmaxHint = 0, qmaxHint = 0) {
+  const pmax = Math.max(m.a / m.b, pmaxHint) * 1.05, qmax = Math.max(m.a, qmaxHint * 1.05) * 1.02;
   const sx = nice(qmax), sy = nice(pmax);
   const Qmax = up(qmax, sx), Pmax = up(pmax, sy);
   const D = DG.seg(0, m.a / m.b, m.a, 0);
@@ -1674,7 +1688,7 @@ const CALCS = [
       const askSpend = Math.random() < 0.5;
       return {
         prompt: `In an agricultural market, ${eqn(m)}. The government sets a minimum price of $${Pm} and buys any surplus. Calculate ${askSpend ? 'government expenditure on buying the surplus' : 'the size of the surplus'}.`,
-        panel: marketPanel(m, [DG.L(DG.seg(0, Pm, m.a * 0.95, Pm), 'P_min', 'g')]), post: [DG.G([qd, Pm], String(qd), null, { toY: false }), DG.G([qs, Pm], String(qs), null, { toY: false })],
+        panel: marketPanel(m, [DG.L(DG.seg(0, Pm, Math.max(m.a, qs) * 0.97, Pm), 'P_min', 'g')], 0, qs), post: [DG.G([qd, Pm], String(qd), null, { toY: false }), DG.G([qs, Pm], String(qs), null, { toY: false })],
         ans: askSpend ? Pm * (qs - qd) : qs - qd, unit: askSpend ? '$' : 'units',
         work: `At P = ${Pm}: Q<sub>d</sub> = ${qd}; Q<sub>s</sub> = ${qs}. Surplus = ${qs - qd} units. Government expenditure = ${Pm} × ${qs - qd} = ${money(Pm * (qs - qd))}.`,
       };
@@ -1752,7 +1766,7 @@ const CALCS = [
       const top = m.a / m.b * 0.95, MSC = DG.seg(0, m.c / m.d + e, -m.c + m.d * (top - e), top);
       return {
         prompt: `Demand (MPB = MSB) is Q<sub>d</sub> = ${m.a} − ${m.b}P and supply (MPC) is Q<sub>s</sub> = −${m.c} + ${m.d}P. Production creates a constant external cost of $${e} per unit. Calculate the welfare loss (to 2 d.p.).`,
-        panel: (() => { const p = marketPanel(m, [DG.L(MSC, 'MSC', 'x')]); p.ax = ['P, costs, benefits ($)', 'Quantity']; p.els[0].lab = 'MPB = MSB'; p.els[1].lab = 'MPC'; return p; })(),
+        panel: (() => { const p = marketPanel(m, [DG.L(MSC, 'MSC', 'x', { anchor: 'end', dx: -6, dy: -8 })], (m.P + e) / 1.05 * 1.08); p.ax = ['P, costs, benefits ($)', 'Quantity']; p.els[0].lab = 'MPB = MSB'; p.els[1].lab = 'MPC'; return p; })(),
         post: [DG.A([[Qopt, Popt], [m.Q, m.P + e], [m.Q, m.P]], 'wl', null), DG.G([m.Q, m.P], String(m.Q), String(m.P)), DG.G([Qopt, Popt], String(n2(Qopt)), String(n2(Popt)))],
         ans: wl, unit: '$', tol: 0.011,
         work: `Market: Q<sub>m</sub> = ${m.Q} (where MPB = MPC). Social optimum: MSC is supply shifted up by ${e}: ${m.a} − ${m.b}P = −${m.c} + ${m.d}(P − ${e}) → P = ${n2(Popt)}, Q<sub>opt</sub> = ${n2(Qopt)}.<br>Welfare loss = ½ × external cost × (Q<sub>m</sub> − Q<sub>opt</sub>) = ½ × ${e} × ${n2(m.Q - Qopt)} = ${money(wl)}.`,
@@ -1804,6 +1818,51 @@ const CALCS = [
     },
   },
 ];
+
+// The generators pick random numbers, so clip every drawn line to its panel's axes (Liang–Barsky on each segment).
+function clipPts(pts, mx, my) {
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x1, y1] = pts[i], [x2, y2] = pts[i + 1], dx = x2 - x1, dy = y2 - y1;
+    let t0 = 0, t1 = 1, ok = true;
+    for (const [p, q] of [[-dx, x1], [dx, mx - x1], [-dy, y1], [dy, my - y1]]) {
+      if (p === 0) { if (q < 0) ok = false; continue; }
+      const r = q / p; if (p < 0) t0 = Math.max(t0, r); else t1 = Math.min(t1, r);
+    }
+    if (!ok || t0 > t1) continue;
+    const a = [x1 + t0 * dx, y1 + t0 * dy], b = [x1 + t1 * dx, y1 + t1 * dy];
+    if (!out.length || Math.hypot(out[out.length - 1][0] - a[0], out[out.length - 1][1] - a[1]) > 1e-9) out.push(a);
+    out.push(b);
+  }
+  return out;
+}
+// Sutherland–Hodgman: clip a shaded area to the same box
+function clipPoly(pts, mx, my) {
+  const edges = [[p => p[0] >= 0, null, 'x', 0], [p => p[0] <= mx, null, 'x', mx], [p => p[1] >= 0, null, 'y', 0], [p => p[1] <= my, null, 'y', my]];
+  let out = pts;
+  for (const [inside, , ax, v] of edges) {
+    const src = out; out = [];
+    for (let i = 0; i < src.length; i++) {
+      const a = src[i], b = src[(i + 1) % src.length], ia = inside(a), ib = inside(b);
+      const cut = () => { const k = ax === 'x' ? (v - a[0]) / (b[0] - a[0]) : (v - a[1]) / (b[1] - a[1]); return [a[0] + k * (b[0] - a[0]), a[1] + k * (b[1] - a[1])]; };
+      if (ia) out.push(a); if (ia !== ib) out.push(cut());
+    }
+  }
+  return out;
+}
+for (const c of CALCS) {
+  const gen = c.gen;
+  c.gen = () => {
+    const g = gen.call(c);
+    if (g.panel) {
+      const [mx, my] = g.panel.max || [100, 100];
+      const fix = els => els && els.map(e => e.k === 'line' ? { ...e, pts: clipPts(e.pts, mx, my) } : e.k === 'area' ? { ...e, pts: clipPoly(e.pts, mx, my) } : e);
+      g.panel = { ...g.panel, els: fix(g.panel.els) }; if (g.post) g.post = fix(g.post);
+    }
+    return g;
+  };
+}
+
 
 /* ---------- App: filters, modes, scoring ---------- */
 const $ = (s, el = document) => el.querySelector(s);
